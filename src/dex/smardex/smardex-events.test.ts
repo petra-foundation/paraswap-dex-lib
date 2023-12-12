@@ -4,8 +4,7 @@ import { Interface } from '@ethersproject/abi';
 import { Tokens } from '../../../tests/constants-e2e';
 dotenv.config();
 
-import SmardexPoolLayerOneABI from '../../abi/smardex/layer-1/smardex-pool.json';
-import SmardexPoolLayerTwoABI from '../../abi/smardex/layer-2/smardex-pool.json';
+import SmardexPoolABI from '../../abi/smardex/smardex-pool.json';
 import { Smardex } from './smardex';
 import { SmardexEventPool } from './smardex-event-pool';
 import { Network } from '../../constants';
@@ -255,11 +254,7 @@ NETWORK_CONFIGS.forEach(({ name, network, pools, tokens }) => {
               const smardex = new Smardex(network, dexKey, dexHelper);
               const multicall = smardex.getFeesMultiCallData(poolAddress);
               const SmardexPool = new SmardexEventPool(
-                new Interface(
-                  smardex.isLayer1()
-                    ? SmardexPoolLayerOneABI
-                    : SmardexPoolLayerTwoABI,
-                ),
+                new Interface(SmardexPoolABI),
                 dexHelper,
                 poolAddress,
                 token0,
@@ -267,7 +262,7 @@ NETWORK_CONFIGS.forEach(({ name, network, pools, tokens }) => {
                 logger,
                 multicall?.callEntry,
                 multicall?.callDecoder,
-                smardex.isLayer1(),
+                smardex.legacyPairs,
               );
 
               // It is done in generateState. But here have to make it manually

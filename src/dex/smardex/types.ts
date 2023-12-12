@@ -41,7 +41,7 @@ export type BuyOnSmardexParam = [
 
 export type SmardexParam = SellOnSmardexParam | BuyOnSmardexParam;
 
-export type DexParams = Omit<UniswapV2DexParams, 'feeCode'>;
+export type DexParams = Omit<UniswapV2DexParams, 'feeCode'> & { legacyInitCode?: string; legacyPairs?: string[] };
 
 export type SmardexFees = {
   feesLP: bigint;
