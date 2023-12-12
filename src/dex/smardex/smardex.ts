@@ -1,3 +1,4 @@
+import { LATENCY_OFFSET_SECONDS } from './sdk/constants';
 import { AbiCoder, Interface } from '@ethersproject/abi';
 import { Contract } from 'web3-eth-contract';
 import _ from 'lodash';
@@ -24,6 +25,7 @@ import {
 } from '../../types';
 import { IDexHelper } from '../../dex-helper/index';
 import {
+  GraphQLPairsResponse,
   SmardexFees,
   SmardexPair,
   SmardexPool,
@@ -91,6 +93,10 @@ export class Smardex
   readonly isFeeOnTransferSupported: boolean = true;
   readonly SRC_TOKEN_DEX_TRANSFERS = 1;
   readonly DEST_TOKEN_DEX_TRANSFERS = 1;
+
+  // Constants for top pools caching
+  readonly CACHED_RESERVES_USD_TTL = 3000;
+  readonly CACHED_RESERVES_USD_KEY = 'cachedReservesUSD';
 
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(SmardexConfig);
@@ -696,75 +702,121 @@ export class Smardex
     tokenAddress: Address,
     limit: number,
   ): Promise<PoolLiquidity[]> {
-    if (!this.subgraphURL) return [];
+    tokenAddress = tokenAddress.toLowerCase();
+    await this.updateUSDReservesIfRequired();
+    const liquidityPromises = Object.values(this.pairs)
+      .filter(
+        pair =>
+          pair.token0.address.toLowerCase() === tokenAddress ||
+          pair.token1.address.toLowerCase() === tokenAddress,
+      )
+      .filter(pair => pair.exchange)
+      .map(async pair => {
+        const usdReserve = await this.getCachedUSDReserveForPair(
+          pair.exchange!,
+        );
+        return {
+          exchange: this.dexKey,
+          address: pair.exchange!,
+          liquidityUSD: usdReserve,
+          connectorTokens: [
+            tokenAddress === pair.token0.address.toLowerCase()
+              ? pair.token1
+              : pair.token0,
+          ],
+        };
+      });
+    const resolvedLiquidity = await Promise.all(liquidityPromises);
+    return resolvedLiquidity
+      .sort((a, b) => b.liquidityUSD - a.liquidityUSD)
+      .slice(0, limit);
+  }
+
+  async getCachedUSDReserveForPair(pairAddress: Address): Promise<number> {
+    const usdReserve = await this.dexHelper.cache.get(
+      this.dexKey,
+      this.network,
+      `${pairAddress.toLowerCase()}-usd-reserve`,
+    );
+
+    if (!usdReserve) return 0;
+    return Number(usdReserve);
+  }
+
+  async updateUSDReservesIfRequired(): Promise<void> {
+    if (!this.subgraphURL || !(await this.isUSDReservesOutdated())) {
+      // No need to update
+      this.logger.debug('No need to update USD reserves');
+      return;
+    }
+    await this.acquireUSDReservesCacheLock();
+    const { pairs } = await this.getSubgraphPairs();
+    for (const pair of pairs) {
+      await this.dexHelper.cache.setex(
+        this.dexKey,
+        this.network,
+        `${pair.id}-usd-reserve`,
+        this.CACHED_RESERVES_USD_TTL,
+        pair.reserveUSD.toString(),
+      );
+    }
+  }
+
+  async acquireUSDReservesCacheLock(): Promise<void> {
+    this.dexHelper.cache.setex(
+      this.dexKey,
+      this.network,
+      this.CACHED_RESERVES_USD_KEY,
+      this.CACHED_RESERVES_USD_TTL,
+      Date.now().toString(),
+    );
+  }
+
+  async isUSDReservesOutdated(): Promise<boolean> {
+    const lastUpdate = await this.dexHelper.cache.get(
+      this.dexKey,
+      this.network,
+      this.CACHED_RESERVES_USD_KEY,
+    );
+    if (!lastUpdate) return true;
+    return false;
+  }
+
+  async getSubgraphPairs(): Promise<GraphQLPairsResponse> {
+    if (!this.subgraphURL) return { pairs: [] };
     const query = `
-      query ($token: Bytes!, $limit: Int) {
-        pools0: pairs(first: $limit, orderBy: reserveUSD, orderDirection: desc, where: {token0: $token, reserve0_gt: 1, reserve1_gt: 1}) {
+    query {
+      pairs(
+        orderBy: reserveUSD
+        orderDirection: desc
+        where: {reserve0_gt: 1, reserve1_gt: 1}
+      ) {
         id
+        reserveUSD
         token0 {
           id
           decimals
+          derivedUSD
         }
         token1 {
           id
           decimals
+          derivedUSD
         }
-        reserveUSD
-      }
-      pools1: pairs(first: $limit, orderBy: reserveUSD, orderDirection: desc, where: {token1: $token, reserve0_gt: 1, reserve1_gt: 1}) {
-        id
-        token0 {
-          id
-          decimals
-        }
-        token1 {
-          id
-          decimals
-        }
-        reserveUSD
       }
     }`;
-
-    const { data } = await this.dexHelper.httpRequest.post(
-      this.subgraphURL,
-      {
-        query,
-        variables: { token: tokenAddress.toLowerCase(), limit },
-      },
-      SUBGRAPH_TIMEOUT,
-      { 'x-api-key': this.dexHelper.config.data.smardexSubgraphAuthToken! },
-    );
-
-    if (!(data && data.pools0 && data.pools1))
-      throw new Error("Couldn't fetch the pools from the subgraph");
-    const pools0 = _.map(data.pools0, pool => ({
-      exchange: this.dexKey,
-      address: pool.id.toLowerCase(),
-      connectorTokens: [
-        {
-          address: pool.token1.id.toLowerCase(),
-          decimals: parseInt(pool.token1.decimals),
-        },
-      ],
-      liquidityUSD: parseFloat(pool.reserveUSD),
-    }));
-
-    const pools1 = _.map(data.pools1, pool => ({
-      exchange: this.dexKey,
-      address: pool.id.toLowerCase(),
-      connectorTokens: [
-        {
-          address: pool.token0.id.toLowerCase(),
-          decimals: parseInt(pool.token0.decimals),
-        },
-      ],
-      liquidityUSD: parseFloat(pool.reserveUSD),
-    }));
-
-    return _.slice(
-      _.sortBy(_.concat(pools0, pools1), [pool => -1 * pool.liquidityUSD]),
-      0,
-      limit,
-    );
+    const apiToken = this.dexHelper.config.data.smardexSubgraphAuthToken!;
+    const { data }: { data: GraphQLPairsResponse } =
+      await this.dexHelper.httpRequest.post(
+        this.subgraphURL,
+        { query },
+        SUBGRAPH_TIMEOUT,
+        { 'x-api-key': apiToken },
+      );
+    if (!data) {
+      this.logger.error('Error fetching pairs from subgraph', data);
+      return { pairs: [] };
+    }
+    return data;
   }
 }
