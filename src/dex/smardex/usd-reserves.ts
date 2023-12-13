@@ -7,8 +7,8 @@ import { SubgraphPairReserve, USDReserve } from './types';
 // Service for managing USD reserves for Smardex
 export class USDReservesService {
   private static readonly CACHE_KEY_LOCK = 'cached-reserves-usd';
-  private static readonly CACHE_TTL_LOCK = 60; // 1 minute
-  private static readonly CACHE_TTL_RESERVES = 10 * 60; // 10 minutes
+  private static readonly CACHE_TTL_LOCK = 120; // 2 minutes
+  private static readonly CACHE_TTL_RESERVES = 60 * 60; // 1 hour
   private static readonly CACHE_RESERVE_KEY_SUFFIX = '-usd-reserve';
   private readonly subgraphURL: string;
   private readonly dexHelper: IDexHelper;
