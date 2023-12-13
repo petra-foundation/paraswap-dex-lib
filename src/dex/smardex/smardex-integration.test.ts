@@ -70,7 +70,7 @@ const networkConfigs: Array<NetworkConfig> = [
         src: 'SDEX',
         dest: 'WBTC',
         sell: [0, 100_000, 200_000, 300_000],
-        buy: [0, 1, 2, 3],
+        buy: [0, 1, 2],
       },
       {
         src: 'ARB',
