@@ -68,19 +68,12 @@ export interface SmardexPair extends Omit<UniswapV2Pair, 'pool'> {
 
 export type SmardexPool = UniswapPool;
 
-export type GraphQLPairsResponse = {
-  pairs: {
-    id: string;
-    reserveUSD: number;
-    token0: {
-      id: string;
-      decimals: number;
-      derivedUSD: number;
-    };
-    token1: {
-      id: string;
-      decimals: number;
-      derivedUSD: number;
-    };
-  }[];
+export type SubgraphPairReserve = {
+  id: string;
+  reserveUSD: number;
+};
+
+export type USDReserve = {
+  pairAddress: string;
+  reserveUSD: number;
 };

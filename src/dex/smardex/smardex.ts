@@ -1,4 +1,3 @@
-import { LATENCY_OFFSET_SECONDS } from './sdk/constants';
 import { AbiCoder, Interface } from '@ethersproject/abi';
 import { Contract } from 'web3-eth-contract';
 import _ from 'lodash';
@@ -21,14 +20,11 @@ import {
   SimpleExchangeParam,
   Token,
   TransferFeeParams,
-  TxInfo,
 } from '../../types';
 import { IDexHelper } from '../../dex-helper/index';
 import {
-  GraphQLPairsResponse,
   SmardexFees,
   SmardexPair,
-  SmardexPool,
   SmardexPoolOrderedParams,
   SmardexPoolState,
 } from './types';
@@ -42,7 +38,6 @@ import {
   SmardexRouterFunctions,
   directSmardexFunctionName,
   DefaultSmardexPoolGasCost,
-  SUBGRAPH_TIMEOUT,
   FEES_LAYER_ONE,
 } from '../smardex/constants';
 import { SmardexData, SmardexParam } from '../smardex/types';
@@ -55,21 +50,12 @@ import { computeAmountIn, computeAmountOut } from './sdk/core';
 import { SmardexEventPool } from './smardex-event-pool';
 import SmardexPoolLayerOneABI from '../../abi/smardex/layer-1/smardex-pool.json';
 import SmardexPoolLayerTwoABI from '../../abi/smardex/layer-2/smardex-pool.json';
+import { USDReservesService } from './usd-reserves';
 
 const smardexPoolL1 = new Interface(SmardexPoolLayerOneABI);
 const smardexPoolL2 = new Interface(SmardexPoolLayerTwoABI);
 
 const coder = new AbiCoder();
-
-function encodePools(pools: SmardexPool[]): NumberAsString[] {
-  return pools.map(({ fee, direction, address }) => {
-    return (
-      (BigInt(fee) << 161n) +
-      ((direction ? 0n : 1n) << 160n) +
-      BigInt(address)
-    ).toString();
-  });
-}
 
 export class Smardex
   extends SimpleExchange
@@ -98,6 +84,8 @@ export class Smardex
   readonly CACHED_RESERVES_USD_TTL = 3000;
   readonly CACHED_RESERVES_USD_KEY = 'cachedReservesUSD';
 
+  readonly usdReserves: USDReservesService;
+
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(SmardexConfig);
 
@@ -123,6 +111,12 @@ export class Smardex
     );
     this.routerInterface = new Interface(ParaSwapABI);
     this.exchangeRouterInterface = new Interface(SmardexRouterABI);
+    this.usdReserves = new USDReservesService(
+      this.dexKey,
+      this.network,
+      this.dexHelper,
+      this.subgraphURL!,
+    );
   }
 
   getAdapters(side: SwapSide): { name: string; index: number }[] | null {
@@ -703,7 +697,6 @@ export class Smardex
     limit: number,
   ): Promise<PoolLiquidity[]> {
     tokenAddress = tokenAddress.toLowerCase();
-    await this.updateUSDReservesIfRequired();
     const liquidityPromises = Object.values(this.pairs)
       .filter(
         pair =>
@@ -712,7 +705,7 @@ export class Smardex
       )
       .filter(pair => pair.exchange)
       .map(async pair => {
-        const usdReserve = await this.getCachedUSDReserveForPair(
+        const usdReserve = await this.usdReserves.getUSDReserveForPair(
           pair.exchange!,
         );
         return {
@@ -730,93 +723,5 @@ export class Smardex
     return resolvedLiquidity
       .sort((a, b) => b.liquidityUSD - a.liquidityUSD)
       .slice(0, limit);
-  }
-
-  async getCachedUSDReserveForPair(pairAddress: Address): Promise<number> {
-    const usdReserve = await this.dexHelper.cache.get(
-      this.dexKey,
-      this.network,
-      `${pairAddress.toLowerCase()}-usd-reserve`,
-    );
-
-    if (!usdReserve) return 0;
-    return Number(usdReserve);
-  }
-
-  async updateUSDReservesIfRequired(): Promise<void> {
-    if (!this.subgraphURL || !(await this.isUSDReservesOutdated())) {
-      // No need to update
-      this.logger.debug('No need to update USD reserves');
-      return;
-    }
-    await this.acquireUSDReservesCacheLock();
-    const { pairs } = await this.getSubgraphPairs();
-    for (const pair of pairs) {
-      await this.dexHelper.cache.setex(
-        this.dexKey,
-        this.network,
-        `${pair.id}-usd-reserve`,
-        this.CACHED_RESERVES_USD_TTL,
-        pair.reserveUSD.toString(),
-      );
-    }
-  }
-
-  async acquireUSDReservesCacheLock(): Promise<void> {
-    this.dexHelper.cache.setex(
-      this.dexKey,
-      this.network,
-      this.CACHED_RESERVES_USD_KEY,
-      this.CACHED_RESERVES_USD_TTL,
-      Date.now().toString(),
-    );
-  }
-
-  async isUSDReservesOutdated(): Promise<boolean> {
-    const lastUpdate = await this.dexHelper.cache.get(
-      this.dexKey,
-      this.network,
-      this.CACHED_RESERVES_USD_KEY,
-    );
-    if (!lastUpdate) return true;
-    return false;
-  }
-
-  async getSubgraphPairs(): Promise<GraphQLPairsResponse> {
-    if (!this.subgraphURL) return { pairs: [] };
-    const query = `
-    query {
-      pairs(
-        orderBy: reserveUSD
-        orderDirection: desc
-        where: {reserve0_gt: 1, reserve1_gt: 1}
-      ) {
-        id
-        reserveUSD
-        token0 {
-          id
-          decimals
-          derivedUSD
-        }
-        token1 {
-          id
-          decimals
-          derivedUSD
-        }
-      }
-    }`;
-    const apiToken = this.dexHelper.config.data.smardexSubgraphAuthToken!;
-    const { data }: { data: GraphQLPairsResponse } =
-      await this.dexHelper.httpRequest.post(
-        this.subgraphURL,
-        { query },
-        SUBGRAPH_TIMEOUT,
-        { 'x-api-key': apiToken },
-      );
-    if (!data) {
-      this.logger.error('Error fetching pairs from subgraph', data);
-      return { pairs: [] };
-    }
-    return data;
   }
 }
