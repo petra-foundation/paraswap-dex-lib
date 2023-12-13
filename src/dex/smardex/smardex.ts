@@ -38,7 +38,7 @@ import {
   SmardexRouterFunctions,
   directSmardexFunctionName,
   DefaultSmardexPoolGasCost,
-  FEES_LAYER_ONE,
+  FEES_LEGACY_LAYER_ONE,
 } from '../smardex/constants';
 import { SmardexData, SmardexParam } from '../smardex/types';
 import { IDex } from '../..';
