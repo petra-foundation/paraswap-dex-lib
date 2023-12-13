@@ -25,7 +25,6 @@ import { IDexHelper } from '../../dex-helper/index';
 import {
   SmardexFees,
   SmardexPair,
-  SmardexPool,
   SmardexPoolOrderedParams,
   SmardexPoolState,
 } from './types';
@@ -39,8 +38,7 @@ import {
   SmardexRouterFunctions,
   directSmardexFunctionName,
   DefaultSmardexPoolGasCost,
-  SUBGRAPH_TIMEOUT,
-  FEES_LEGACY_LAYER_ONE,
+  FEES_LAYER_ONE,
 } from '../smardex/constants';
 import { SmardexData, SmardexParam } from '../smardex/types';
 import { IDex } from '../..';
@@ -50,20 +48,11 @@ import ParaSwapABI from '../../abi/IParaswap.json';
 import { applyTransferFee } from '../../lib/token-transfer-fee';
 import { computeAmountIn, computeAmountOut } from './sdk/core';
 import { SmardexEventPool } from './smardex-event-pool';
+import { USDReservesService } from './usd-reserves';
 
 const smardexPool = new Interface(SmardexPoolABI);
 
 const coder = new AbiCoder();
-let cnt = 0;
-function encodePools(pools: SmardexPool[]): NumberAsString[] {
-  return pools.map(({ fee, direction, address }) => {
-    return (
-      (BigInt(fee) << 161n) +
-      ((direction ? 0n : 1n) << 160n) +
-      BigInt(address)
-    ).toString();
-  });
-}
 
 export class Smardex
   extends SimpleExchange
@@ -91,6 +80,12 @@ export class Smardex
   readonly SRC_TOKEN_DEX_TRANSFERS = 1;
   readonly DEST_TOKEN_DEX_TRANSFERS = 1;
 
+  // Constants for top pools caching
+  readonly CACHED_RESERVES_USD_TTL = 3000;
+  readonly CACHED_RESERVES_USD_KEY = 'cachedReservesUSD';
+
+  readonly usdReserves: USDReservesService;
+
   public static dexKeysWithNetwork: { key: string; networks: Network[] }[] =
     getDexKeysWithNetwork(SmardexConfig);
 
@@ -116,6 +111,12 @@ export class Smardex
     );
     this.routerInterface = new Interface(ParaSwapABI);
     this.exchangeRouterInterface = new Interface(SmardexRouterABI);
+    this.usdReserves = new USDReservesService(
+      this.dexKey,
+      this.network,
+      this.dexHelper,
+      this.subgraphURL!,
+    );
   }
 
   getAdapters(side: SwapSide): { name: string; index: number }[] | null {
@@ -690,76 +691,32 @@ export class Smardex
     tokenAddress: Address,
     limit: number,
   ): Promise<PoolLiquidity[]> {
-    if (!this.subgraphURL) return [];
-    console.log('>>>>>>>>>>>', cnt ++);
-    const query = `
-      query ($token: Bytes!, $limit: Int) {
-        pools0: pairs(first: $limit, orderBy: reserveUSD, orderDirection: desc, where: {token0: $token, reserve0_gt: 1, reserve1_gt: 1}) {
-        id
-        token0 {
-          id
-          decimals
-        }
-        token1 {
-          id
-          decimals
-        }
-        reserveUSD
-      }
-      pools1: pairs(first: $limit, orderBy: reserveUSD, orderDirection: desc, where: {token1: $token, reserve0_gt: 1, reserve1_gt: 1}) {
-        id
-        token0 {
-          id
-          decimals
-        }
-        token1 {
-          id
-          decimals
-        }
-        reserveUSD
-      }
-    }`;
-
-    const { data } = await this.dexHelper.httpRequest.post(
-      this.subgraphURL,
-      {
-        query,
-        variables: { token: tokenAddress.toLowerCase(), limit },
-      },
-      SUBGRAPH_TIMEOUT,
-      { 'x-api-key': this.dexHelper.config.data.smardexSubgraphAuthToken! },
-    );
-
-    if (!(data && data.pools0 && data.pools1))
-      throw new Error("Couldn't fetch the pools from the subgraph");
-    const pools0 = _.map(data.pools0, pool => ({
-      exchange: this.dexKey,
-      address: pool.id.toLowerCase(),
-      connectorTokens: [
-        {
-          address: pool.token1.id.toLowerCase(),
-          decimals: parseInt(pool.token1.decimals),
-        },
-      ],
-      liquidityUSD: parseFloat(pool.reserveUSD),
-    }));
-
-    const pools1 = _.map(data.pools1, pool => ({
-      exchange: this.dexKey,
-      address: pool.id.toLowerCase(),
-      connectorTokens: [
-        {
-          address: pool.token0.id.toLowerCase(),
-          decimals: parseInt(pool.token0.decimals),
-        },
-      ],
-      liquidityUSD: parseFloat(pool.reserveUSD),
-    }));
-
-    return _.slice(
-      _.sortBy(_.concat(pools0, pools1), [pool => -1 * pool.liquidityUSD]),
-      0,
-      limit,
-    );
+    tokenAddress = tokenAddress.toLowerCase();
+    const liquidityPromises = Object.values(this.pairs)
+      .filter(
+        pair =>
+          pair.token0.address.toLowerCase() === tokenAddress ||
+          pair.token1.address.toLowerCase() === tokenAddress,
+      )
+      .filter(pair => pair.exchange)
+      .map(async pair => {
+        const usdReserve = await this.usdReserves.getUSDReserveForPair(
+          pair.exchange!,
+        );
+        return {
+          exchange: this.dexKey,
+          address: pair.exchange!,
+          liquidityUSD: usdReserve,
+          connectorTokens: [
+            tokenAddress === pair.token0.address.toLowerCase()
+              ? pair.token1
+              : pair.token0,
+          ],
+        };
+      });
+    const resolvedLiquidity = await Promise.all(liquidityPromises);
+    return resolvedLiquidity
+      .sort((a, b) => b.liquidityUSD - a.liquidityUSD)
+      .slice(0, limit);
   }
 }
