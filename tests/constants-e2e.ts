@@ -327,6 +327,10 @@ export const Tokens: {
       address: '0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6',
       decimals: 19,
     },
+    WASSIE: {
+      address: '0x2c95D751DA37A5C1d9c5a7Fd465c1d50F3d96160',
+      decimals: 18,
+    },
   },
   [Network.ROPSTEN]: {
     DAI: {
@@ -1068,6 +1072,8 @@ export const Holders: {
     MATIC: '0x7073783eee7e9b3e6e4ddac4d7f49dc46044dd9a',
     POL: '0x57B6Ad484ccdd902C4419424bA648ba6Ed45dc68',
     SDEX: '0xB0470cF15B22a6A32c49a7C20E3821B944A76058',
+    ALPH: '0xA344855388C9f2760e998eb2207B58de6E7d0360',
+    WASSIE: '0x9Faf7Ad8711f6B87CFcF39c235b0A03eF4bDD7C2',
   },
   [Network.ROPSTEN]: {
     ETH: '0x43262A12d8610AA70C15DbaeAC321d51613c9071',
