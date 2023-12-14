@@ -107,7 +107,7 @@ describe('SmarDex E2E', () => {
           buyAmount: '1200000000000000000',
         },
         {
-          name: 'ETH',
+          name: 'WETH',
           sellAmount: '1200000000000000000',
           buyAmount: '567000789000000000000000000',
         },
