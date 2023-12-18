@@ -70,7 +70,7 @@ const networkConfigs: Array<NetworkConfig> = [
         src: 'SDEX',
         dest: 'WBTC',
         sell: [0, 100_000, 200_000, 300_000],
-        buy: [0, 1, 2, 3],
+        buy: [0, 1, 2],
       },
       {
         src: 'ARB',
@@ -247,7 +247,7 @@ networkConfigs.forEach(({ name, network, tokens, tokenPairs }) => {
         .filter((value, index, self) => self.indexOf(value) === index)
         // Native token doesn't have a pool, avoid it
         .filter(token => tokens[token].address !== ETHER_ADDRESS);
-      // First getTopPoolsForToken for USD reserves caching
+      // First getTopPoolsForToken for reserves caching (at least 1 token initializes the whole cache)
       await smardex.getTopPoolsForToken(tokens['USDC'].address, 10);
       // Get top pools for each token and check liquidity
       await Promise.all(
